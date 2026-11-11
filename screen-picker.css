@@ -1,0 +1,5 @@
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+body { background: #10182755; color: white; cursor: crosshair; user-select: none; touch-action: none; font: 15px system-ui, sans-serif; }
+#controls { position: absolute; z-index: 2; top: 10px; left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% - 24px); padding: 10px 16px; border-radius: 8px; background: #15213b; cursor: default; }
+#hint { margin: 0; font-size: 13px; }
+#selection { position: absolute; border: 2px solid #93c5fd; background: #2563eb29; pointer-events: none; box-sizing: border-box; }

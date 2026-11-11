@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'">
+  <title>Interview Assistant · Blue Crystal</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1>Interview Assistant <span class="owner-name">Blue Crystal</span></h1>
+    <button id="theme" type="button" class="secondary">Light mode</button>
+    <details id="settings">
+      <summary>Session setup</summary>
+      <div class="settings-panel">
+      <label>Speech-to-text
+        <select id="transcriptionProvider">
+          <option value="cloud">OpenAI API</option>
+          <option value="local">Local Whisper (free, offline)</option>
+          <option value="off">Off (screen text only)</option>
+        </select>
+      </label>
+      <div id="whisperFields" hidden>
+        <label>Whisper executable<input id="whisperExecutable" placeholder="Full path to whisper-cli.exe"></label>
+        <label>Whisper model<input id="whisperModel" placeholder="Full path to ggml-base.en.bin"></label>
+        <p class="hint">Local transcription uses English audio. Keep the executable with its DLLs.</p>
+      </div>
+      <label>Answer provider
+        <select id="answerProvider">
+          <option value="openai">OpenAI</option>
+          <option value="claude">Claude</option>
+          <option value="gemini">Gemini</option>
+        </select>
+      </label>
+      <div id="openaiKeyField"><label>OpenAI API key<input id="key" type="password" autocomplete="off"></label></div>
+      <div id="claudeKeyField" hidden><label>Claude API key<input id="claudeKey" type="password" autocomplete="off"></label></div>
+      <div id="geminiKeyField" hidden><label>Gemini API key<input id="geminiKey" type="password" autocomplete="off"></label></div>
+      <div class="columns">
+        <label>Answer model<input id="answerModel" maxlength="100"></label>
+        <label id="cloudModel">Transcription model<input id="transcriptionModel" value="gpt-4o-mini-transcribe"></label>
+      </div>
+      <label>Resume<textarea id="resume" rows="4" maxlength="30000" placeholder="Paste your experience, skills, and achievements."></textarea></label>
+      <label>Job description<textarea id="jobDescription" rows="4" maxlength="10000" placeholder="Paste the role, responsibilities, and requirements."></textarea></label>
+      <label>Notes<textarea id="notes" rows="3" maxlength="10000" placeholder="Add interview context or personal facts."></textarea></label>
+      <label>System prompt<textarea id="systemPrompt" rows="8" maxlength="8000" placeholder="Clear and apply to restore the default."></textarea></label>
+      <button id="applyPrompt" class="secondary" type="button">Apply prompt</button>
+      <button id="apply">Apply settings</button>
+      <label>Ask AI shortcut<input id="answerShortcut" value="Ctrl+Space" maxlength="40"></label>
+      <button id="saveShortcut" class="secondary" type="button">Set shortcut</button>
+      <p class="hint">API keys are held in memory for this session. Cloud transcription uses OpenAI. Local Whisper works offline.</p>
+      </div>
+    </details>
+    <div class="window-buttons" aria-label="Window controls">
+      <button id="minimizeWindow" class="secondary" type="button" aria-label="Minimize" title="Minimize">−</button>
+      <button id="maximizeWindow" class="secondary" type="button" aria-label="Maximize or restore" title="Maximize or restore">□</button>
+      <button id="closeWindow" class="secondary" type="button" aria-label="Close" title="Close">×</button>
+    </div>
+  </header>
+  <div class="toolbar" aria-label="Session controls">
+    <button id="listen" disabled>Start listening</button>
+    <button id="stop" disabled class="secondary">Stop</button>
+    <button id="testAudio" class="secondary">Test system audio</button>
+    <button id="selectScreen" class="secondary">Select screen text</button>
+    <button id="stopScreen" class="secondary" disabled>Stop screen text</button>
+    <label class="check"><input type="checkbox" id="auto" disabled> Auto-answer</label>
+    <label class="window-opacity">
+      Overlay opacity <input id="opacity" type="range" min="35" max="100" step="5" value="100">
+      <output id="opacityValue" for="opacity">100%</output>
+    </label>
+    <label class="audio-meter">System audio <meter id="level" min="0" max="1" value="0"></meter></label>
+  </div>
+  <div class="status-bar">
+    <p id="status" role="status">Open Session setup and apply your speech-to-text settings.</p>
+    <p id="audioState">Audio stopped</p>
+    <p id="screenState" role="status">Screen text off</p>
+  </div>
+  <main>
+    <section class="captions" aria-labelledby="captionHeading">
+      <div class="pane-header">
+        <h2 id="captionHeading">Interviewer captions</h2>
+        <div class="actions">
+          <button id="copyCaptions" class="secondary" disabled>Copy</button>
+          <button id="clearCaptions" class="secondary" disabled>Clear</button>
+        </div>
+      </div>
+      <div id="transcript" role="group" aria-label="Select a caption to use it as your question"></div>
+      <div class="latest">
+        <button id="useLatest" class="secondary" disabled>Use latest turn</button>
+        <p id="latestText">Listen to system audio or select a screen area.</p>
+      </div>
+    </section>
+    <section class="response" aria-labelledby="responseHeading">
+      <div class="pane-header">
+        <h2 id="responseHeading">AI response</h2>
+        <div class="actions">
+          <button id="copyAnswer" class="secondary" disabled>Copy answer</button>
+          <button id="cancel" class="secondary" disabled>Cancel</button>
+        </div>
+      </div>
+      <div id="output" tabindex="0" aria-label="AI response"></div>
+      <label for="question" class="question-label">Question</label>
+      <div class="compose">
+        <textarea id="question" rows="3" placeholder="Type a question or select a caption. Leave blank to ask about the latest turn."></textarea>
+        <button id="answer" disabled>Ask AI</button>
+      </div>
+      <div class="actions commands" aria-label="Answer commands">
+        <button id="short" class="secondary" disabled>Short</button>
+        <button id="explain" class="secondary" disabled>Explain</button>
+        <button id="negotiate" class="secondary" disabled>Negotiate</button>
+        <button id="askThem" class="secondary" disabled>Ask them</button>
+        <button id="strategy" class="secondary" disabled>Strategy</button>
+        <button id="summarize" class="secondary" disabled>Summarize</button>
+      </div>
+    </section>
+  </main>
+  <footer><span id="protection">Capture exclusion is unverified.</span><span>Ask AI <kbd id="activeShortcut">Ctrl+Space</kbd></span></footer>
+  <script src="caption-match.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
