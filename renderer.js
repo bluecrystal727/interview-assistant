@@ -36,7 +36,10 @@ let speaking = false;
 let stopping;
 
 function status(message) { ui.status.textContent = message; }
-function report(error) { status(error.message || String(error)); }
+function report(error) {
+  const message = error.message || String(error);
+  status(message.replace(/^Error invoking remote method '[^']+': Error: /, ''));
+}
 
 function updateCaptureControls() {
   const audioBusy = audioActive || audioOpening;
@@ -301,6 +304,28 @@ ui.answerProvider.onchange = () => {
   updateProviderFields();
 };
 
+function activateSession(result, submittedKeys = {}) {
+  configured = true;
+  audioAvailable = result.audioAvailable !== false;
+  answersAvailable = result.answersAvailable;
+  localTranscription = result.localTranscription;
+  for (const provider of result.configuredKeys || []) {
+    const field = answerKeyInputs[provider];
+    if (field.value === submittedKeys[provider]) field.value = '';
+    field.placeholder = result.saved === false ? 'Key configured for this session' : 'Saved key configured';
+  }
+  ++answerId;
+  updateCaptureControls();
+  ui.answer.disabled = !answersAvailable;
+  ui.cancel.disabled = true;
+  for (const command of answerCommands) ui[command].disabled = !answersAvailable;
+  ui.auto.disabled = !answersAvailable;
+  if (!answersAvailable) ui.auto.checked = false;
+  status(answersAvailable ? 'Ready. Capture audio or screen text, or type a question.'
+    : 'Captions are ready. Add an API key for your answer provider to enable Ask AI.');
+  if (result.saved === false) status('Settings applied for this session. Could not save them for restart.');
+}
+
 ui.apply.onclick = async () => {
   ui.apply.disabled = true;
   const prompt = ui.systemPrompt.value;
@@ -318,29 +343,11 @@ ui.apply.onclick = async () => {
       systemPrompt: prompt,
       whisperExecutable: ui.whisperExecutable.value, whisperModel: ui.whisperModel.value,
     });
-    configured = true;
     if (ui.systemPrompt.value === prompt && result.systemPrompt !== undefined) {
       ui.systemPrompt.value = result.systemPrompt;
     }
-    audioAvailable = result.audioAvailable !== false;
-    answersAvailable = result.answersAvailable;
-    localTranscription = result.localTranscription;
-    const submittedKeys = { openai: key, claude: claudeKey, gemini: geminiKey };
-    for (const provider of result.configuredKeys || []) {
-      const field = answerKeyInputs[provider];
-      if (field.value === submittedKeys[provider]) field.value = '';
-      field.placeholder = 'Key configured for this session';
-    }
-    ++answerId;
-    updateCaptureControls();
-    ui.answer.disabled = !answersAvailable;
-    ui.cancel.disabled = true;
-    for (const command of answerCommands) ui[command].disabled = !answersAvailable;
-    ui.auto.disabled = !answersAvailable;
-    if (!answersAvailable) ui.auto.checked = false;
+    activateSession(result, { openai: key, claude: claudeKey, gemini: geminiKey });
     ui.settings.open = false;
-    status(answersAvailable ? 'Ready. Capture audio or screen text, or type a question.'
-      : 'Captions are ready. Add an API key for your answer provider to enable Ask AI.');
   } catch (error) { report(error); }
   finally { ui.apply.disabled = audioActive; }
 };
@@ -533,6 +540,16 @@ ui.saveShortcut.onclick = async () => {
 };
 window.assistant.info().then(info => {
   answerModels = info.answerModels || {};
+  if (info.savedConfiguration) {
+    const saved = info.savedConfiguration;
+    for (const field of ['answerProvider', 'answerModel', 'transcriptionProvider', 'transcriptionModel',
+      'whisperExecutable', 'whisperModel', 'resume', 'jobDescription', 'notes']) {
+      ui[field].value = saved[field] ?? '';
+    }
+    answerModelDrafts.set(saved.answerProvider, saved.answerModel);
+  }
+  if (info.restoredSession) activateSession(info.restoredSession);
+  if (info.sessionWarning) status(info.sessionWarning);
   updateProviderFields();
   if (!ui.systemPrompt.value && info.systemPrompt !== undefined) ui.systemPrompt.value = info.systemPrompt;
   ui.activeShortcut.textContent = info.shortcut || 'Unavailable';

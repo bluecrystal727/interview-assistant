@@ -43,7 +43,7 @@ Each answer provider uses its own API key. Get keys from the [OpenAI API platfor
 - Click a caption to fill the question box. Ctrl-click or Shift-click to append a caption. **Use latest turn** fills the box with the latest captured turn. Use **Short**, **Explain**, **Negotiate**, **Ask them**, **Strategy**, or **Summarize** to choose a response format.
 - A new answer cancels an older answer. Cancel answer leaves audio listening active. Stop discards unfinished audio and cancels pending requests while retaining the displayed transcript.
 - Up to four audio segments can queue. If processing falls behind or transcription fails, listening stops with an error so you can reconnect.
-- Model names are editable. Defaults are gpt-4.1-mini for answers and gpt-4o-mini-transcribe for transcription. Account access may vary. Choose a model available to your account that supports the corresponding API.
+- Model names are editable. OpenAI defaults to `gpt-5-mini` for answers and `gpt-4o-mini-transcribe` for transcription. Ask AI uses the Responses API. If OpenAI denies access, check the key's project and endpoint permissions and keep the request ID shown by the app for troubleshooting.
 - Context, key, transcript, and answers are kept in memory for the session. The app has no conversation export or settings save feature.
 
 ## Verify screen sharing on your Windows PC
@@ -60,6 +60,8 @@ Exclusion depends on the Windows version, graphics/capture path, and app version
 
 ## Data handling
 
+Applied session settings, the system prompt, and API keys are saved in an encrypted file in the app's user data folder. The app restores them on the next launch under the same Windows account. Recording starts when you click Start listening.
+
 Clicking Start listening starts capture. With OpenAI transcription selected, captured audio goes to OpenAI. With Local Whisper selected, the app processes audio on your PC and removes its temporary WAV and transcript files after each segment. The visible question, recent interviewer transcript, Resume, job description, and Notes go to the selected answer provider. Screen video is requested to obtain system audio, but frames are never rendered, uploaded, or saved by this app. OpenAI Responses requests use store=false. Provider-side data handling follows your API account's policies.
 
 Applied keys stay in the Electron main process for the session, and the corresponding password fields are cleared. Leave a key field blank to reuse the key for that provider while changing context or models. Provider errors are converted to fixed messages so credentials and request data are not forwarded to the interface or Electron IPC error logs. Node integration is disabled in the renderer, context isolation and sandboxing are enabled, and remote navigation is blocked.
@@ -75,7 +77,7 @@ npm test
 npm start
 ```
 
-To build a portable Windows executable on a Windows machine, run `npm run dist`. The output is in dist/. The build is unsigned.
+On a Windows machine, run `npm ci` and `npm run dist` to build the portable executable. Share only `dist/Interview-Assistant-<version>-<arch>.exe`. Electron and the app are bundled, so users can open the executable directly without Node.js or an installer. The build uses `build/icon.ico` and is unsigned unless you configure code signing. Local Whisper still requires its executable and model if users select it.
 
 The UI uses plain HTML/CSS/JavaScript to avoid a frontend build step. The Electron main process handles API calls and capture settings. The audio worklet performs speech segmentation.
 

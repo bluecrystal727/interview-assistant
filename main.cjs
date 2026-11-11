@@ -1,6 +1,7 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, globalShortcut, clipboard, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, globalShortcut, clipboard, screen, safeStorage } = require('electron');
 const path = require('node:path');
-const { readFileSync, writeFileSync } = require('node:fs');
+const { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require('node:fs');
+const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const OpenAI = require('openai');
 const { toFile } = require('openai');
@@ -14,6 +15,9 @@ let settings;
 let answerController;
 let activeShortcut = '';
 let shortcutFile;
+let sessionFile;
+let sessionConfiguration;
+let sessionWarning;
 const defaultShortcut = 'Ctrl+Space';
 const screenReader = createScreenReader({ BrowserWindow, ipcMain, screen, desktopCapturer });
 const transcriptionControllers = new Set();
@@ -55,7 +59,7 @@ Greetings and small talk: one-line SAY only. If the interviewer requests a speci
 Help me give clear, confident, technically sound answers without misrepresenting my experience.`;
 let systemPrompt = defaultSystemPrompt;
 const answerProviders = {
-  openai: { model: 'gpt-4.1-mini', baseURL: 'https://api.openai.com/v1' },
+  openai: { model: 'gpt-5-mini', baseURL: 'https://api.openai.com/v1' },
   claude: { model: 'claude-haiku-5-5', baseURL: 'https://api.anthropic.com/v1' },
   gemini: { model: 'gemini-3.8-flash', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/' },
 };
@@ -75,8 +79,8 @@ function trusted(event) {
   }
 }
 
-// Never pass provider errors (which may echo credentials or request data) to IPC/logs.
-function apiError(error) {
+// Provider messages and response bodies may echo credentials or request data.
+function apiError(error, provider, operation) {
   const messages = {
     401: 'API key rejected. Enter a valid key and apply settings.',
     403: 'API access denied. Check model access and project permissions.',
@@ -84,7 +88,20 @@ function apiError(error) {
     400: 'API rejected the request. Check the selected model supports this operation.',
     404: 'Model unavailable. Check the model name and project access.',
   };
-  return new Error(messages[error.status] || 'API request failed. Check your connection and model settings, then retry.');
+  const message = Object.hasOwn(messages, error.status)
+    ? messages[error.status]
+    : 'API request failed. Check your connection and model settings, then retry.';
+  if (provider !== 'openai') return new Error(message);
+
+  const status = Number.isInteger(error.status) ? ` (HTTP ${error.status})` : '';
+  const requestId = typeof error.requestID === 'string' && /^req_[a-zA-Z0-9]{1,100}$/.test(error.requestID)
+    ? ` Request ID ${error.requestID}.` : '';
+  const hint = error.code === 'unsupported_country_region_territory'
+    ? 'OpenAI rejected access from this network location.'
+    : error.code === 'insufficient_permissions'
+      ? `Check that the API key and project role can write to the ${operation} endpoint.`
+      : message;
+  return new Error(`OpenAI${status}. ${hint}${requestId}`);
 }
 
 function cancelRequests() {
@@ -153,14 +170,42 @@ ipcMain.handle('set-system-prompt', (event, prompt) => {
   trusted(event);
   if (typeof prompt !== 'string' || prompt.length > 8000) throw new Error('Enter a system prompt of up to 8,000 characters.');
   systemPrompt = prompt.trim() || defaultSystemPrompt;
+  if (sessionFile && !saveSession()) {
+    throw new Error('Prompt applied for this session. Could not save it for restart.');
+  }
   return systemPrompt;
 });
 
-ipcMain.handle('configure', (event, input = {}) => {
-  trusted(event);
+function saveSession() {
+  if (!sessionFile || !safeStorage?.isEncryptionAvailable()) return false;
+  const temporary = sessionFile + '.' + randomUUID() + '.tmp';
+  try {
+    const data = safeStorage.encryptString(JSON.stringify({ configuration: sessionConfiguration, systemPrompt }));
+    mkdirSync(path.dirname(sessionFile), { recursive: true });
+    writeFileSync(temporary, data, { flag: 'wx' });
+    renameSync(temporary, sessionFile);
+    sessionWarning = undefined;
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try { rmSync(temporary, { force: true }); } catch { /* Temporary data is encrypted. */ }
+  }
+}
+
+function sessionCapabilities() {
+  return { answersAvailable: Boolean(clients[settings.answerProvider]), localTranscription: Boolean(settings.local),
+    audioAvailable: settings.audioAvailable, systemPrompt, configuredKeys: Object.keys(clients) };
+}
+
+function configureSession(input, persist = true) {
   const answerProvider = input.answerProvider ?? settings?.answerProvider ?? 'openai';
   if (typeof answerProvider !== 'string' || !Object.hasOwn(answerProviders, answerProvider)) {
     throw new Error('Choose OpenAI, Claude, or Gemini as the answer provider.');
+  }
+  const answerModel = String(input.answerModel ?? '').trim().slice(0, 100) || answerProviders[answerProvider].model;
+  if (answerProvider === 'openai' && /^(?:gpt-realtime|gpt-4o(?:-mini)?-realtime)(?:-|$)/i.test(answerModel)) {
+    throw new Error('This model requires the Realtime API. For Ask AI, use gpt-5-mini or another Responses API model.');
   }
   const keys = { openai: input.key, claude: input.claudeKey, gemini: input.geminiKey };
   const suppliedKeys = Object.entries(keys)
@@ -174,13 +219,17 @@ ipcMain.handle('configure', (event, input = {}) => {
   if (suppliedKeys.some(([, key]) => /\s/.test(key))) throw new Error('An API key contains whitespace. Paste the key again.');
   const applySettings = () => {
     const nextClients = { ...clients };
-    if (!nextClients.openai && !suppliedKeys.some(([provider]) => provider === 'openai') && !local && audioAvailable) {
+    const savedKeys = sessionConfiguration?.keys || {};
+    const nextKeys = { ...savedKeys, ...Object.fromEntries(suppliedKeys) };
+    if (!nextKeys.openai && !local && audioAvailable) {
       throw new Error('OpenAI speech-to-text needs an OpenAI API key. Enter one, choose Local Whisper, or turn off audio.');
     }
     try {
-      for (const [provider, key] of suppliedKeys) {
+      for (const [provider, key] of Object.entries(nextKeys)) {
+        if (nextClients[provider] && savedKeys[provider] === key) continue;
         nextClients[provider] = new OpenAI({
-          apiKey: key, baseURL: answerProviders[provider].baseURL, maxRetries: 0, timeout: 60000, logLevel: 'off',
+          apiKey: key, baseURL: answerProviders[provider].baseURL,
+          organization: null, project: null, maxRetries: 0, timeout: 60000, logLevel: 'off',
         });
       }
     } catch {
@@ -192,18 +241,31 @@ ipcMain.handle('configure', (event, input = {}) => {
       local,
       audioAvailable,
       answerProvider,
-      answerModel: String(input.answerModel ?? '').trim().slice(0, 100) || answerProviders[answerProvider].model,
+      answerModel,
       transcriptionModel: String(input.transcriptionModel || 'gpt-4o-mini-transcribe').trim().slice(0, 100),
       resume: String(input.resume ?? input.context ?? '').trim().slice(0, input.resume == null ? 40000 : 30000),
       jobDescription: String(input.jobDescription ?? '').trim().slice(0, 10000),
       notes: String(input.notes ?? '').trim().slice(0, 10000),
     };
     if (typeof input.systemPrompt === 'string') systemPrompt = input.systemPrompt.trim().slice(0, 8000) || defaultSystemPrompt;
-    return { answersAvailable: Boolean(clients[answerProvider]), localTranscription: Boolean(local),
-      audioAvailable, systemPrompt, configuredKeys: Object.keys(clients) };
+    sessionConfiguration = {
+      answerProvider, answerModel,
+      transcriptionProvider: local ? 'local' : audioAvailable ? 'cloud' : 'off',
+      transcriptionModel: settings.transcriptionModel,
+      whisperExecutable: String(input.whisperExecutable || '').trim(),
+      whisperModel: String(input.whisperModel || '').trim(),
+      resume: settings.resume, jobDescription: settings.jobDescription, notes: settings.notes,
+      keys: nextKeys,
+    };
+    return { ...sessionCapabilities(), saved: persist && saveSession() };
   };
   if (local) return checkWhisperFiles(local.executable, local.model).then(applySettings);
   return applySettings();
+}
+
+ipcMain.handle('configure', (event, input = {}) => {
+  trusted(event);
+  return configureSession(input);
 });
 
 ipcMain.handle('transcribe', async (event, bytes) => {
@@ -227,7 +289,7 @@ ipcMain.handle('transcribe', async (event, bytes) => {
   } catch (error) {
     if (controller.signal.aborted) return '';
     if (local) throw error;
-    throw apiError(error);
+    throw apiError(error, 'openai', 'audio transcription');
   } finally {
     transcriptionControllers.delete(controller);
   }
@@ -284,7 +346,7 @@ ipcMain.handle('answer', async (event, input = {}) => {
     // Only our fixed local messages may cross IPC.
     if (error.message === 'The answer was interrupted or incomplete. Partial text is retained; try again.' ||
         error.message === 'No complete answer received. Check the model and connection, then retry.') throw error;
-    throw apiError(error);
+    throw apiError(error, settings.answerProvider, 'Responses API');
   } finally {
     if (answerController === controller) answerController = undefined;
   }
@@ -312,14 +374,34 @@ ipcMain.handle('copy-text', (event, text) => {
 ipcMain.handle('info', event => {
   trusted(event);
   const answerModels = Object.fromEntries(Object.entries(answerProviders).map(([id, provider]) => [id, provider.model]));
+  const { keys, ...savedConfiguration } = sessionConfiguration || {};
   return { platform: process.platform, protection: window.isContentProtected(), shortcut: activeShortcut,
-    systemPrompt, answerModels };
+    systemPrompt, answerModels, sessionWarning,
+    savedConfiguration: sessionConfiguration ? savedConfiguration : undefined,
+    restoredSession: settings ? sessionCapabilities() : undefined };
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  try {
+    sessionFile = path.join(app.getPath('userData'), 'session-settings.enc');
+    const encrypted = readFileSync(sessionFile);
+    if (!safeStorage?.isEncryptionAvailable()) throw new Error('Encryption unavailable');
+    const saved = JSON.parse(safeStorage.decryptString(encrypted));
+    if (typeof saved.systemPrompt === 'string') systemPrompt = saved.systemPrompt || defaultSystemPrompt;
+    sessionConfiguration = saved.configuration;
+    if (sessionConfiguration) await configureSession(sessionConfiguration, false);
+  } catch (error) {
+    if (sessionFile && error.code !== 'ENOENT') {
+      sessionWarning = settings || !sessionConfiguration
+        ? 'Could not restore saved session settings. Open Session setup to apply them again.'
+        : 'Could not activate saved settings. Check your speech-to-text settings and apply them again.';
+    }
+  }
+  const icon = app.isPackaged ? path.join(process.resourcesPath, 'icon.ico') : path.join(__dirname, 'build', 'icon.ico');
+  if (process.platform === 'win32') app.setAppUserModelId('local.interview.assistant');
   window = new BrowserWindow({
     width: 1080, height: 760, minWidth: 440, minHeight: 520,
-    show: false, alwaysOnTop: true, frame: false, transparent: true, backgroundColor: '#00000000',
+    show: false, alwaysOnTop: true, frame: false, transparent: true, backgroundColor: '#00000000', icon,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true, nodeIntegration: false, sandbox: true,

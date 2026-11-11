@@ -1,6 +1,6 @@
 {
   "name": "interview-assistant",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "description": "Desktop assistant for interviews where AI assistance is allowed",
   "main": "main.cjs",
   "private": true,
@@ -10,12 +10,42 @@
     "test": "node --test tests/*.test.cjs",
     "dist": "electron-builder --win portable"
   },
-  "dependencies": { "openai": "^6.0.0" },
-  "devDependencies": { "electron": "^44.5.0", "electron-builder": "^26.0.12" },
+  "dependencies": {
+    "openai": "^6.0.0"
+  },
+  "devDependencies": {
+    "electron": "^44.5.0",
+    "electron-builder": "^26.0.12"
+  },
   "build": {
     "appId": "local.interview.assistant",
     "productName": "Interview Assistant",
-    "files": ["main.cjs", "local-transcription.cjs", "answer-stream.cjs", "preload.cjs", "renderer.js", "audio-worklet.js", "index.html", "style.css", "caption-match.js", "screen-ocr.cjs", "screen-ocr.ps1", "screen-picker*"],
-    "win": { "target": "portable" }
+    "files": [
+      "main.cjs",
+      "local-transcription.cjs",
+      "answer-stream.cjs",
+      "preload.cjs",
+      "renderer.js",
+      "audio-worklet.js",
+      "index.html",
+      "style.css",
+      "caption-match.js",
+      "screen-ocr.cjs",
+      "screen-ocr.ps1",
+      "screen-picker*"
+    ],
+    "win": {
+      "target": "portable",
+      "icon": "build/icon.ico"
+    },
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      }
+    ],
+    "portable": {
+      "artifactName": "Interview-Assistant-${version}-${arch}.exe"
+    }
   }
 }

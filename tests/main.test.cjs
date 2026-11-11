@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-async function main(localWhisper, regionReader) {
+async function main(localWhisper, regionReader, storage) {
   const handlers = new Map();
   const permissions = {};
   let window;
@@ -22,7 +22,9 @@ async function main(localWhisper, regionReader) {
     }
   }
   const electron = {
-    app: { whenReady: () => Promise.resolve(), on() {}, quit() {} },
+    app: { whenReady: () => Promise.resolve(), setAppUserModelId() {}, on() {}, quit() {},
+      getPath: storage && (() => storage.folder) },
+    safeStorage: storage,
     BrowserWindow: class {
       constructor(options) {
         window = this;
@@ -71,14 +73,47 @@ async function main(localWhisper, regionReader) {
       : name.startsWith('.') ? require(path.join('..', name)) : require(name),
   });
   await Promise.resolve();
+  if (storage) await Promise.resolve();
   const event = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
   return { window, event, shortcuts, permissions, sent, get client() { return client; },
     call: (name, input, sender = event) => handlers.get(name)(sender, input) };
 }
 
+test('saved settings and provider keys restore on restart without exposing keys to the renderer', async t => {
+  const folder = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'interview-session-test-'));
+  t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
+  const storage = {
+    folder,
+    isEncryptionAvailable: () => true,
+    encryptString: text => Buffer.from(Buffer.from(text).toString('base64')),
+    decryptString: data => Buffer.from(data.toString(), 'base64').toString(),
+  };
+  const first = await main(undefined, undefined, storage);
+  const applied = first.call('configure', {
+    answerProvider: 'claude', answerModel: 'test-model', claudeKey: 'private-key-fixture',
+    transcriptionProvider: 'off', resume: 'Built CI pipelines', notes: 'Keep answers brief',
+  });
+  assert.equal(applied.saved, true);
+  first.call('set-system-prompt', 'Custom interview prompt');
+  assert.doesNotMatch(fs.readFileSync(path.join(folder, 'session-settings.enc'), 'utf8'), /private-key-fixture/);
+
+  const restarted = await main(undefined, undefined, storage);
+  const info = restarted.call('info');
+  assert.equal(info.savedConfiguration.answerProvider, 'claude');
+  assert.equal(info.savedConfiguration.answerModel, 'test-model');
+  assert.equal(info.savedConfiguration.resume, 'Built CI pipelines');
+  assert.equal(info.savedConfiguration.notes, 'Keep answers brief');
+  assert.equal(info.systemPrompt, 'Custom interview prompt');
+  assert.equal(info.restoredSession.answersAvailable, true);
+  assert.equal(info.restoredSession.audioAvailable, false);
+  assert.equal(restarted.client.options.apiKey, 'private-key-fixture');
+  assert.doesNotMatch(JSON.stringify(info), /private-key-fixture/);
+});
+
 test('startup requests always-on-top and isolation, with capture exclusion reported honestly', async () => {
   const m = await main();
   assert.equal(m.window.options.show, false);
+  assert.equal(m.window.options.icon, path.resolve(__dirname, '../build/icon.ico'));
   assert.equal(m.window.protectedWhenShown, true);
   assert.equal(m.window.options.alwaysOnTop, true);
   assert.equal(m.window.options.frame, false);
@@ -140,9 +175,27 @@ test('configuration disables SDK logging, trims models, and keeps the key on con
   m.call('configure', { key: 'test-fixture', answerModel: ' model ', context: 'CV' });
   const originalClient = m.client;
   assert.equal(m.client.options.logLevel, 'off');
+  assert.equal(m.client.options.organization, null);
+  assert.equal(m.client.options.project, null);
   m.call('configure', { context: 'New CV' });
   assert.equal(m.client, originalClient);
   assert.throws(() => m.call('configure', { key: 'bad key' }), /whitespace/);
+});
+
+test('OpenAI rejects Realtime-only answer models and reports safe diagnostics for a denied request', async () => {
+  const m = await main();
+  assert.throws(() => m.call('configure', { key: 'fixture', answerModel: 'gpt-realtime-2.1-mini' }),
+    /requires the Realtime API/);
+  m.call('configure', { key: 'fixture' });
+  m.client.responses.create = async request => {
+    assert.equal(request.model, 'gpt-5-mini');
+    throw Object.assign(new Error('private request body'), {
+      status: 403, code: 'insufficient_permissions', requestID: 'req_fixture123',
+    });
+  };
+  await assert.rejects(m.call('answer', { question: 'Hi' }), {
+    message: 'OpenAI (HTTP 403). Check that the API key and project role can write to the Responses API endpoint. Request ID req_fixture123.',
+  });
 });
 
 test('Claude and Gemini stream from their own clients and reuse only their own keys', async () => {
